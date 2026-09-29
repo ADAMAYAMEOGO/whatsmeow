@@ -22,6 +22,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/libsignal/groups"
+	groupRecord "go.mau.fi/libsignal/groups/state/record"
 	"go.mau.fi/libsignal/keys/prekey"
 	"go.mau.fi/libsignal/protocol"
 	"go.mau.fi/libsignal/session"
@@ -30,6 +31,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/proto/waAICommon"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -816,6 +818,18 @@ func (cli *Client) sendGroup(
 	start = time.Now()
 	builder := groups.NewGroupSessionBuilder(cli.Store, pbSerializer)
 	senderKeyName := protocol.NewSenderKeyName(to.String(), cli.getOwnLID().SignalAddress())
+	if to.Server == types.BroadcastServer && to != types.StatusBroadcastJID {
+		// A phone only records a message another of its devices sent to one of its broadcast
+		// lists when it gets it as a DeviceSentMessage, which happens when it can't decrypt
+		// the fan-out copy and asks for a retry. Once it holds the list's sender key, it
+		// decrypts that copy directly and never shows the message as sent, neither in the
+		// list nor in the recipients' chats. A fresh sender key for every message keeps it
+		// on the retry path; recipients get the new key with each message anyway.
+		emptyKey := groupRecord.NewSenderKey(store.SignalProtobufSerializer.SenderKeyRecord, store.SignalProtobufSerializer.SenderKeyState)
+		if err = cli.Store.StoreSenderKey(ctx, senderKeyName, emptyKey); err != nil {
+			return "", nil, fmt.Errorf("failed to reset sender key to send %s to %s: %w", id, to, err)
+		}
+	}
 	signalSKDMessage, err := builder.Create(ctx, senderKeyName)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to create sender key distribution message to send %s to %s: %w", id, to, err)
